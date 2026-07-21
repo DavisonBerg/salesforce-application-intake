@@ -1,0 +1,1 @@
+public class ApplicationIntakeException extends Exception {}

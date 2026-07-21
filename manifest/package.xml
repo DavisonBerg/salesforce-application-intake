@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+
+    <!-- Custom object: brings its fields, list views and validation rules -->
+    <types>
+        <members>Application__c</members>
+        <name>CustomObject</name>
+    </types>
+
+    <!-- Fields added to standard objects (must be listed individually) -->
+    <types>
+        <members>Account.FederalTaxID__c</members>
+        <members>Lead.ApplicationSource__c</members>
+        <members>Opportunity.ApplicationSource__c</members>
+        <name>CustomField</name>
+    </types>
+
+    <!-- Page layouts: separate metadata type, NOT included with CustomObject.
+         Confirm real names with:
+         sf org list metadata metadata-type Layout target-org intake -->
+    <types>
+        <members>Application__c-Application Layout</members>
+        <members>Account-Account Layout</members>
+        <members>Lead-Lead Layout</members>
+        <members>Opportunity-Opportunity Layout</members>
+        <name>Layout</name>
+    </types>
+
+    <!-- Global value set shared by Application__c, Lead and Opportunity -->
+    <types>
+        <members>ApplicationSource</members>
+        <name>GlobalValueSet</name>
+    </types>
+
+    <!-- Apex -->
+    <types>
+        <members>ApplicationIntakeConstants</members>
+        <members>ApplicationIntakeException</members>
+        <members>ApplicationIntakeRequest</members>
+        <members>ApplicationIntakeParser</members>
+        <members>ApplicationIntakeValidator</members>
+        <members>ApplicationIntakeService</members>
+        <members>ApplicationIntakeController</members>
+        <members>ApplicationIntakeRestResource</members>
+        <name>ApexClass</name>
+    </types>
+
+    <!-- Lightning Web Component -->
+    <types>
+        <members>applicationIntakeForm</members>
+        <name>LightningComponentBundle</name>
+    </types>
+
+    <!-- Permission sets: not created yet. Uncomment once they exist.
+    <types>
+        <members>Application_Intake_Guest</members>
+        <members>Application_Intake_Admin</members>
+        <name>PermissionSet</name>
+    </types>
+    -->
+
+    <version>63.0</version>
+</Package>

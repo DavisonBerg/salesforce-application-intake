@@ -1,0 +1,62 @@
+<template>
+    <lightning-card title="Partner Application">
+        <div class="slds-var-p-horizontal_medium">
+
+            <!-- Form -->
+            <template if:false={isSubmitted}>
+                <lightning-input label="Company Name" required
+                                 data-field="companyName"
+                                 onchange={handleChange}></lightning-input>
+
+                <lightning-input label="Email" type="email" required
+                                 data-field="email"
+                                 onchange={handleChange}></lightning-input>
+
+                <lightning-input label="Phone" type="tel" required
+                                 data-field="phone"
+                                 onchange={handleChange}></lightning-input>
+
+                <lightning-input label="Contact First Name" required
+                                 data-field="contactFirstName"
+                                 onchange={handleChange}></lightning-input>
+
+                <lightning-input label="Contact Last Name" required
+                                 data-field="contactLastName"
+                                 onchange={handleChange}></lightning-input>
+
+                <lightning-input label="Federal Tax ID"
+                                 data-field="federalTaxId"
+                                 onchange={handleChange}></lightning-input>
+
+                <lightning-input label="Annual Revenue" type="number" formatter="currency"
+                                 data-field="annualRevenue"
+                                 onchange={handleChange}></lightning-input>
+
+                <div class="slds-var-m-top_medium">
+                    <lightning-button variant="brand" label="Submit"
+                                      disabled={isLoading}
+                                      onclick={handleSubmit}></lightning-button>
+                </div>
+
+                <template if:true={isLoading}>
+                    <lightning-spinner alternative-text="Submitting"></lightning-spinner>
+                </template>
+
+                <template if:true={errorMessage}>
+                    <div class="slds-text-color_error slds-var-m-top_small">
+                        {errorMessage}
+                    </div>
+                </template>
+            </template>
+
+            <!-- Confirmation -->
+            <template if:true={isSubmitted}>
+                <div class="slds-text-heading_small slds-var-m-vertical_medium">
+                    Thank you — your application has been received.
+                </div>
+                <p>Reference: {result.applicationId}</p>
+            </template>
+
+        </div>
+    </lightning-card>
+</template>
