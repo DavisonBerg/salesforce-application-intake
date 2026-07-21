@@ -1,245 +1,193 @@
-# Salesforce DX Project: Next Steps
-
-Now that you’ve created a Salesforce DX project, what’s next? Here are some documentation resources to get you started.
-
-## How Do You Plan to Deploy Your Changes?
-
-Do you want to deploy a set of changes, or create a self-contained application? Choose a [development model](https://developer.salesforce.com/tools/vscode/en/user-guide/development-models).
-
-## Configure Your Salesforce DX Project
-
-The `sfdx-project.json` file contains useful configuration information for your project. See [Salesforce DX Project Configuration](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_ws_config.htm) in the _Salesforce DX Developer Guide_ for details about this file.
-
-## Read All About It
-
-- [Salesforce Extensions Documentation](https://developer.salesforce.com/tools/vscode/)
-- [Salesforce CLI Setup Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_intro.htm)
-- [Salesforce DX Developer Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_intro.htm)
-- [Salesforce CLI Command Reference](https://developer.salesforce.com/docs/atlas.en-us.sfdx_cli_reference.meta/sfdx_cli_reference/cli_reference.htm)
-
-
 # Salesforce Application Intake
 
-Partner applications come in from two places — a public form on an Experience
-Cloud site, and a webhook for external systems. Either way the system tries to
-find an existing Account. If it finds one, you get an Opportunity. If it
-doesn't, you get a Lead.
+## Overview
 
-## How it's put together
+The Salesforce Application Intake solution handles partner applications submitted through two channels:
 
+* An Experience Cloud form.
+* A REST webhook for external systems.
+
+Both entry points follow the same process:
+
+1. Validate the request.
+2. Store the submission in `Application__c`.
+3. Try to find an existing Account.
+4. Create an Opportunity when an Account is found.
+5. Create a Lead when no Account is found.
+6. Store the processing result or error on `Application__c`.
+
+The main business logic is centralized in `ApplicationIntakeService`, while the LWC and REST resource act as lightweight entry points.
+
+---
+
+## Architecture
+
+```text
+LWC Form ──► ApplicationIntakeController ──┐
+                                           ├──► ApplicationIntakeService ──► Application__c
+REST POST ─► ApplicationIntakeRestResource ─┘                              └──► Lead | Opportunity
 ```
-LWC form  ──► ApplicationIntakeController ──┐
-                                            ├──► ApplicationIntakeService ──► Application__c
-REST POST ──► ApplicationIntakeRestResource ┘                              └─► Lead | Opportunity
-```
 
-The two entry points don't do much: they turn whatever they received into a DTO,
-stamp where it came from, and call the service. Everything interesting happens
-in `ApplicationIntakeService`. The main payoff is that the tests for the actual
-business rules don't have to go anywhere near HTTP or Aura.
+Supporting classes have focused responsibilities:
 
-The rest of the classes are small. `ApplicationIntakeParser` deals with the
-messy JSON, `ApplicationIntakeValidator` checks the required fields,
-`ApplicationIntakeRequest` is a plain DTO, and `ApplicationIntakeException`
-exists so the REST layer can tell "you sent me garbage" apart from "I broke".
+* `ApplicationIntakeParser` – Parses and normalizes incoming JSON.
+* `ApplicationIntakeValidator` – Validates required fields.
+* `ApplicationIntakeRequest` – DTO for incoming requests.
+* `ApplicationIntakeException` – Handles expected request and validation errors.
 
-## The Application__c object
+Keeping the business logic in the service layer also makes the core rules easier to test without depending on HTTP or UI-specific logic.
 
-This is the piece I'd defend hardest. Every submission gets written to a staging
-record before anything else happens.
+---
 
-Without it, a submission that blows up halfway leaves nothing behind. Someone
-emails support saying they submitted an application yesterday and you have no
-way to check. With it, you've got the raw payload, which matching rule fired,
-what got created, and the error if there was one.
+## Application__c as a Staging Record
 
-The brief mentions support requests, and this is the thing that actually answers
-that.
+Every submission is stored in `Application__c` before any Lead or Opportunity is created.
 
-## Matching
+This provides an audit trail containing:
 
-Tax ID first, company name as a fallback. Straight out of the spec.
+* Original submission data.
+* Application source.
+* Matching rule used.
+* Created Lead or Opportunity.
+* Processing errors.
 
-Both queries use bind variables — this is reachable anonymously from a public
-endpoint, so building the query with string concatenation would be a SOQL
-injection hole.
+This is especially useful for support and troubleshooting. Even if processing fails, the original application remains available for investigation.
 
-`findAccount` sets `Matched_By__c` as a side effect, which isn't the prettiest
-design, but it means you can look at any Application record and immediately see
-why it became a Lead instead of an Opportunity. Worth the slightly impure method
-in my opinion.
+---
 
-## Why the service is `without sharing`
+## Account Matching
 
-The guest user can't see any Account at all. So if the service ran `with
-sharing`, the matching query would come back empty every single time and
-everything would become a Lead. And it would pass all your tests, because you
-run those as an admin.
+The matching strategy follows the specification:
 
-So it's `without sharing`, but kept narrow — one query and one insert. The
-`Result` object deliberately doesn't include the Account Id it matched on.
-Otherwise someone could sit there submitting tax IDs and use the response to
-work out which companies are in your org.
+1. Tax ID.
+2. Company Name as a fallback.
 
-## Failures
+All queries use bind variables because the REST endpoint can be publicly accessible. This prevents potential SOQL injection issues.
 
-No `Savepoint` anywhere in the processing block. That's on purpose — rolling
-back would delete the staging record, which is the exact thing you want to keep
-when something goes wrong. The error message goes on the record and the
-transaction commits.
+The matching strategy is also stored in `MatchedBy__c`, making it easy to understand why an application resulted in an Opportunity or Lead.
 
-I didn't add a status field. You can tell what happened from whether
-`Created_Lead__c` / `Created_Opportunity__c` is populated, or whether
-`Error_Message__c` has something in it. A proper status picklist would be nicer
-in a list view and would be the first thing I'd add.
+The current Company Name matching is exact. Fuzzy matching was intentionally left out because false positives are more dangerous than missed matches. A future implementation could introduce normalized names and similarity scoring based on real customer data.
 
-## Some smaller calls
+If multiple Accounts share the same Tax ID, the current implementation uses the first match. This could be improved by flagging the application for manual review.
 
-`StageName` and `CloseDate` on the Opportunity are only there because the
-platform demands them. The opportunity lifecycle isn't part of this, so the
-values don't mean anything.
+---
 
-I left `Amount` empty. Annual revenue is a fact about the company, not the size
-of the deal, and putting it in `Amount` would drop a wrong number into a field
-sales people actually rely on. It's still on the Application record, and on the
-Lead where `AnnualRevenue` genuinely means the same thing.
+## Security
 
-The webhook assumes people will send it rubbish. Body size gets capped before
-anything is deserialized — parsing an unbounded payload is the easiest way to
-DoS a public endpoint. Bad JSON gets a 400. Anything unexpected gets a 500 with
-a generic message; the caller never sees an exception or a field name.
+The service uses `without sharing` because the process can run as an Experience Cloud Guest User, who does not have visibility into Account records.
 
-## Tradeoffs
+Without this approach, Account matching would always return no results and every application would become a Lead.
 
-**Validation stops at the first error.** So a partner with three problems finds
-out about them one at a time. Collecting all the errors and returning them
-together would be better and isn't hard, it just wasn't where I wanted to spend
-the time.
+The elevated access is intentionally limited to the operations required by the intake process.
 
-**Matching is a private method rather than a plugin.** An `IAccountMatcher`
-interface with one class per rule is honestly the right shape for something
-described as "expected to evolve", and pulling it out later is mechanical. I ran
-out of runway. It's the first thing I'd reintroduce.
+The response does not expose the matched Account Id. This prevents callers from using the endpoint to infer which companies exist in the Salesforce org.
 
-**Everything is synchronous.** The webhook does the whole match-and-create before
-it responds. Writing the staging record and handing off to a Queueable would be
-better — the endpoint would stay fast and partner retries would be less
-dangerous. Since the staging record is written first regardless, that change is
-fairly contained.
+The Guest User should only have access to:
 
-**Extra JSON keys are ignored** rather than rejected. Nested payloads aren't
-supported; the parser wants a flat object.
+* Required Apex classes.
+* Create and Read access to `Application__c`.
+* Field-level access limited to the required submission fields.
 
-**Only the Application__c layout is deployed.** Pushing a layout over someone's
-Account page on install felt too invasive. The new fields have to be added
-manually, which is called out below.
+No direct Guest User access should be granted to Account, Lead, or Opportunity.
 
-**Lead assignment rules won't fire** — Apex inserts skip them unless you set
-`DmlOptions`. Whether they should run is really the customer's call.
+---
 
-## The thing I deliberately didn't build
+## Error Handling
 
-Fuzzy matching on company name.
+The `Application__c` record is intentionally not rolled back when processing fails.
 
-Right now the fallback is an exact match, which in practice will miss most of
-what it should catch. Real submissions will have "Acme Corp", "Acme
-Corporation", and "ACME CORP., INC." all meaning the same account.
+This ensures the original submission and error information remain available for troubleshooting.
 
-I left it out on purpose rather than because I ran out of time. Getting it right
-means normalizing legal suffixes and scoring similarity, and you can't tune that
-without looking at a specific customer's Account data. The failure modes aren't
-symmetric either: miss a match and you create a duplicate Lead that someone
-merges later, no real harm. Match wrongly and you've attached an Opportunity to
-the wrong customer's account, which is hard to spot and much harder to explain.
-Shipping a guessed heuristic into someone's CRM didn't seem like the right call.
+The processing result can currently be identified through:
 
-Related, and part of the same job: if several Accounts share a Tax ID, this
-currently just takes the first one. It should really create a Lead flagged for
-someone to look at.
+* `Lead__c` populated → Lead created.
+* `Opportunity__c` populated → Opportunity created.
+* `ErrorMessage__c` populated → Processing failed.
 
-## Setup
+A dedicated Status field could be added in the future to simplify reporting and monitoring.
 
-Worth being upfront: I built and tested this against a Developer Edition org,
-but I stopped at the Apex and the LWC. The Experience Cloud site, the guest user
-permissions and the page layout changes were not done. They're configuration
-rather than code, and with the time I had I'd rather hand over working, tested
-logic than a half-wired site.
+The REST API also validates the request body size and handles:
 
-Everything below is what someone would need to do to actually expose it.
+* Invalid JSON → HTTP 400.
+* Invalid request data → HTTP 400.
+* Unexpected errors → HTTP 500 with a generic message.
 
-### What deploys
+---
+
+## Key Trade-offs
+
+### Synchronous Processing
+
+The REST request currently performs the complete matching and record creation process before returning.
+
+A future improvement would be to create the `Application__c` record first and process the remaining steps asynchronously with Queueable Apex. This would improve response times and make partner retries safer.
+
+### Matching Strategy
+
+The current matching logic is implemented directly in the service.
+
+If additional matching strategies are required, an `IAccountMatcher` interface could be introduced to make the matching process more extensible.
+
+### Validation
+
+Validation currently stops at the first error. Returning all validation errors at once would provide a better experience for external partners.
+
+### Lead Assignment Rules
+
+Apex inserts do not automatically execute Lead Assignment Rules. If required, `Database.DMLOptions` should be used to explicitly enable them.
+
+---
+
+## Deployment and Setup
+
+Deploy the metadata with:
 
 ```bash
 sf project deploy start --manifest manifest/package.xml --target-org <alias>
 ```
 
-That's the Apex, the LWC bundle, `Application__c` with its fields, the fields
-added to Account / Lead / Opportunity, and the global value set.
+The deployment includes the Apex classes, LWC, `Application__c`, related fields, Global Value Set, and `Application__c` layout.
 
-### What still needs doing
+The following configuration must be completed separately:
 
-**1. Enable Digital Experiences.** Setup → Digital Experiences → Settings, pick
-a domain. Org setting, doesn't travel in metadata, can't be undone.
+1. Enable Digital Experiences.
+2. Create and publish an Experience Cloud LWR site.
+3. Configure Guest User access through a Permission Set.
+4. Add the LWC to the Experience Builder page.
+5. Add the required fields to Account, Lead, and Opportunity layouts.
 
-**2. Create and publish a site.** All Sites → New, Build Your Own (LWR). Publish
-it once even if empty — this is also what creates the guest user.
+The REST endpoint will be available at:
 
-**3. Guest user access.** I'd put this in a permission set rather than editing
-the Guest User Profile directly: the guest profile is generated by the org with
-a name derived from the site, so it doesn't version well, whereas a permission
-set ships in the repo. Either way it needs Apex Class access to
-`ApplicationIntakeController` and `ApplicationIntakeRestResource`, plus Create
-and Read on `Application__c` with field access limited to the submission fields.
-
-Read has to be on — the platform won't grant Create without it. With the object
-on a Private sharing model that's harmless in practice.
-
-Nothing on Account, Lead or Opportunity. Those are created by the service in
-elevated context, and a guest user with Create on Opportunity on a public site
-would be a genuine hole.
-
-**4. Put the component on a page.** Switch the LWC targets from
-`lightning__AppPage` to `lightningCommunity__Page` and
-`lightningCommunity__Default`, redeploy, then drag `applicationIntakeForm` into
-Experience Builder and publish.
-
-**5. Layouts.** Add `Federal_Tax_ID__c` to Account and `Application_Source__c` to
-Lead and Opportunity. I only ship the `Application__c` layout — pushing a layout
-over a customer's Account page on install felt more invasive than asking for two
-minutes of clicking.
-
-Once the site is up the webhook is at:
-
-```
+```text
 https://<domain>.my.site.com/services/apexrest/intake/applications
 ```
 
-Until then both paths are still testable. The REST resource works through an
-authenticated session (Workbench, or `sf api request rest`), and the LWC can be
-dropped on a Lightning App Page, which is what the metadata currently targets —
-that's how I verified both.
+The REST resource can be tested through an authenticated Salesforce session, and the LWC can be tested on a Lightning App Page before the Experience Cloud site is configured.
 
-## Tests
+---
+
+## Testing
+
+Run the tests with:
 
 ```bash
 sf apex run test --tests ApplicationIntakeServiceTest --code-coverage --result-format human --wait 10
 ```
 
-Six scenarios: Tax ID match producing an Opportunity, company name fallback
-producing an Opportunity, no match producing a Lead, an invalid request being
-rejected before anything is written, the webhook handling a snake_case payload,
-and the webhook rejecting malformed JSON with a 400.
+The test suite covers:
 
-Two bits of the setup are doing real work. In the Tax ID test the Account is
-given a deliberately different name — if both matched, the test would still pass
-with the Tax ID rule completely broken, because the fallback would quietly save
-it. And in the fallback test neither side has a Tax ID at all, so the first rule
-short-circuits and only the second one can produce the match.
+* Tax ID Account matching.
+* Company Name fallback matching.
+* No match resulting in a Lead.
+* Invalid requests.
+* `snake_case` webhook payloads.
+* Malformed JSON returning HTTP 400.
 
-Nothing uses `SeeAllData=true`, so the org's real Accounts are invisible in there
-and every match comes from data the test class creates itself.
+Tests do not use `SeeAllData=true`; all test data is created within the test class.
 
-## Example request
+---
+
+## Example Request
 
 ```bash
 curl -X POST "https://<domain>.my.site.com/services/apexrest/intake/applications" \
@@ -255,9 +203,9 @@ curl -X POST "https://<domain>.my.site.com/services/apexrest/intake/applications
       }'
 ```
 
-Keys are lowercased with separators stripped before lookup, so `companyName`,
-`company_name` and `Company Name` all land in the same place. The tax ID is
-reduced to digits before matching.
+The parser normalizes field names, so variations such as `companyName`, `company_name`, and `Company Name` are handled consistently. Tax IDs are also normalized to digits before matching.
+
+## Example Response
 
 ```json
 {
